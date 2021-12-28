@@ -1,0 +1,35 @@
+FROM debian:buster as debootstrap
+
+RUN apt-get update \
+  && apt-get install -y \
+      debootstrap \
+      lsb-release \
+  && rm -rf /var/lib/apt/lists/* \
+  && debootstrap --arch armhf --foreign --variant minbase --no-check-gpg $(lsb_release -cs) \
+      /target http://archive.raspbian.org/raspbian
+
+FROM scratch
+
+COPY --from=debootstrap /target/ /
+
+RUN /debootstrap/debootstrap --second-stage
+
+
+RUN apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -yqq --no-install-suggests --no-install-recommends \
+     software-properties-common \
+     build-essential \
+     git \
+     wget \
+     curl \
+     gnupg \
+   && /bin/rm -rf /var/lib/apt/lists/*
+RUN wget -O - http://phoscon.de/apt/deconz.pub.key | apt-key add - \
+ && echo "deb http://phoscon.de/apt/deconz $(lsb_release -cs)-beta main" > /etc/apt/sources.list.d/deconz.list  && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y \
+     deconz \
+     deconz-dev \
+ && apt-get install -qq qt5-default || echo "not installing qt5-default" \
+ && rm -rf /var/lib/apt/lists/*
