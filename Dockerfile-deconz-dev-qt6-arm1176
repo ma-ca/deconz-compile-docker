@@ -1,0 +1,56 @@
+ARG BOOT_RELEASE=trixie
+
+FROM debian:$BOOT_RELEASE AS debootstrap
+
+ARG RELEASE
+ARG TARGET_ARCH
+ARG REPOSITORY=http://deb.debian.org/debian
+ARG TARGET_CPU=
+
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive \
+     apt-get install -y \
+      debootstrap \
+      lsb-release \
+  && rm -rf /var/lib/apt/lists/* \
+  && debootstrap --arch $TARGET_ARCH --foreign --variant minbase --no-check-gpg $RELEASE \
+      /target $REPOSITORY
+
+FROM scratch
+
+COPY --from=debootstrap /target/ /
+
+RUN /debootstrap/debootstrap --second-stage
+
+# arm1176 on arm32v6
+ARG TARGET_CPU=
+
+ENV QEMU_CPU=${TARGET_CPU}
+
+RUN apt-get update && \
+    env ${TARGET_CPU:+QEMU_CPU=$TARGET_CPU} DEBIAN_FRONTEND=noninteractive \
+    apt-get install --no-install-recommends -yqq \
+        lsb-release \
+        ca-certificates \
+        build-essential \
+        cmake \
+        ninja-build \
+        pkg-config \
+        git \
+        sqlite3 \
+        libsqlite3-dev \
+        libgpiod-dev \
+        libssl-dev \
+        qt6-base-dev \
+        qt6-base-dev-tools \
+        qt6-serialport-dev \
+        qt6-websockets-dev \
+        qt6-declarative-dev \
+        qt6-5compat-dev \
+        dpkg-dev \
+        fakeroot \
+        curl \
+        wget \
+   && /bin/rm -rf /var/lib/apt/lists/*
+
+CMD ["sh", "-c", "cmake -DCMAKE_INSTALL_PREFIX=/usr -DQT_VERSION_MAJOR=6 -G Ninja -B build && cmake --build build"]

@@ -1,0 +1,26 @@
+ARG RELEASE=buster
+
+FROM debian:${RELEASE}
+
+RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
+    sed -i 's/security.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
+    sed -i "/${RELEASE}-updates/d" /etc/apt/sources.list && \
+    echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive \
+    apt-get install --no-install-recommends -yqq \
+      qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools \
+      lsb-release ca-certificates build-essential pkg-config git \
+      libqt5serialport5-dev  libqt5websockets5-dev qtdeclarative5-dev  \
+      sqlite3 libsqlite3-dev libgpiod-dev libssl-dev curl cmake ninja-build \
+      wget gnupg \
+ && wget -qO- https://phoscon.de/apt/deconz.pub.key | \
+    gpg --dearmor -o /etc/apt/trusted.gpg.d/deconz-keyring.gpg \
+ && echo "deb http://phoscon.de/apt/deconz generic main" > /etc/apt/sources.list.d/deconz.list \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive TERM=linux \
+    apt-get install --no-install-recommends -yqq \
+      deconz \
+ && /bin/rm -rf /var/lib/apt/lists/*
+
+CMD ["sh", "-c", "cmake -DCMAKE_INSTALL_PREFIX=/usr -DQT_VERSION_MAJOR=5 -G Ninja -B build && cmake --build build"]

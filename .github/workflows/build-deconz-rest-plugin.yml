@@ -6,39 +6,58 @@ on:
       push_image:
         description: 'Run docker push to ghcr.io'
         required: true
+        default: true
         type: boolean
-    
-env:
-  image_name: ""
-  uname: ""
-  version: ""
-  qtversion: ""
+
+permissions:
+  contents: write
+  packages: write
+  security-events: write
 
 jobs:
   build-compile:
     strategy:
       matrix:
-        os:
-        - arm32v6/debian:buster
-        - arm32v6/debian:bullseye
-        - arm32v7/debian:buster
-        - arm32v7/debian:bullseye
-        - arm64v8/debian:buster
-        - arm64v8/debian:bullseye
-        # - x86_64/ubuntu:xenial
-        # - x86_64/ubuntu:bionic
-        # - x86_64/ubuntu:focal
+        release:
+          # - buster
+          # - bullseye
+          # - bookworm
+          - trixie
+        cpu:
+          - arm32v6
+          - arm32v7
+          - arm64v8
+          - no_qemu
+        qtversion:
+          - 5
+          - 6
+        # include:
+        #   # - release: bookworm
+        #   #   qtversion: 6
+        #   - release: trixie
+        #     cpu: no_qemu
+        #     qtversion: 6
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    
+    - uses: actions/checkout@v7
+
+    - name: Run build-compile begin ${{ matrix.release }}
+      run: |
+        echo "release = ${{ matrix.release }}"
+    - name: Run build-compile begin ${{ matrix.cpu }}
+      run: |
+        echo "cpu = ${{ matrix.cpu }}"
+    - name: Run qtversion = ${{ matrix.qtversion }}
+      run: |
+        echo "qtversion = ${{ matrix.qtversion }}"
+
     - name: Checkout dresden-elektronik/deconz-rest-plugin
-      uses: actions/checkout@v2
+      uses: actions/checkout@v7
       with:
         repository: dresden-elektronik/deconz-rest-plugin
         path: deconz-rest-plugin
         fetch-depth: 0
-    
+
     - name: Check release
       id: check
       env:
@@ -46,147 +65,219 @@ jobs:
       run: |
         cd deconz-rest-plugin
         gitcommit=$(git rev-parse --short HEAD)
-        VERSION="$(git describe --tags $(git rev-list --tags --max-count=1) )-${gitcommit}"
+        VERSION="$(git describe --tags $(git rev-list --tags --max-count=1) )"
+        echo "version=$VERSION" >> ${GITHUB_ENV}
         cd ..
         echo "check release = $VERSION"
-        update_release=false
-        gh release view $VERSION || update_release=true
-        gh release list
-        echo "update_release=${update_release}" >> ${GITHUB_ENV}
-    
-    - name: Run docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-    
+        # update_release=false
+        # gh release view $VERSION || update_release=true
+        # gh release list
+        # echo "update_release=${update_release}" >> ${GITHUB_ENV}
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v4
+
     - name: Set image_name
       run: |
-        BASE_IMAGE=$(basename ${{ matrix.os }} )
-        CPU=$(dirname ${{ matrix.os }} )
+        CPU=${{ matrix.cpu }}
+        qtversion=${{ matrix.qtversion }}
+        QT=""
+        if [ "$qtversion" = "6" ]; then
+          QT="qt6-"
+        fi
+        release=${{ matrix.release }}
         
-        release=$(echo ${BASE_IMAGE} | cut -d: -f2 )
-        image_name=ghcr.io/${{ github.repository_owner }}/deconz-dev-${release}-${CPU}
+        echo "release=${release}" >> ${GITHUB_ENV}
+        echo "qtversion=${qtversion}" >> ${GITHUB_ENV}
+        echo "cpu=${CPU}" >> ${GITHUB_ENV}
+        if [ "x$CPU" = "xno_qemu" ]; then
+          package="deconz-dev-${QT}${release}"
+        else
+          package="deconz-dev-${QT}${release}-${CPU}"
+        fi
+        image_name=ghcr.io/${{ github.repository_owner }}/${package}
         echo "image_name=${image_name}" >> ${GITHUB_ENV}
-        echo "release=${release}-${CPU}" >> ${GITHUB_ENV}
-    
-    - name: Show image_name ${{ env.image_name }}
-      run: echo "${{ env.image_name }} "
-    
-    - name: Build docker image from ${{ matrix.os }}
-      if: ${{ env.update_release == 'true' || github.event.inputs.push_image == 'true' }}
+        echo "package=${package}" >> ${GITHUB_ENV}
+
+    - name: Build docker image from ${{ matrix.release }}
       run: |
-        BASE_IMAGE=$(basename ${{ matrix.os }} )
-        CPU=$(dirname ${{ matrix.os }} )
-        repository="http://archive.raspbian.org/raspbian"
+        CPU=${{ matrix.cpu }}
+        repository="http://raspbian.raspberrypi.com/raspbian/"
         arch=armhf
         qemu=""
+        TARGET_CPU=""
         if [ "x$CPU" = "xarm32v6" ]; then
           qemu="ENV QEMU_CPU=arm1176"
+          TARGET_CPU="arm1176"
         fi
         if [ "x$CPU" = "xarm64v8" ]; then
           arch="arm64"
           repository="http://deb.debian.org/debian"
         fi
-        release=$(echo ${BASE_IMAGE} | cut -d: -f2 )
-        docker build -t ${{ env.image_name }} -f Dockerfile-deconz-dev-${release}-${CPU} .
-      
+        echo "qemu_cpu=$TARGET_CPU" | tee -a ${GITHUB_ENV}
+        echo "arch=$arch" | tee -a ${GITHUB_ENV}
+        release=${{ env.release }}
+        qtversion=${{ matrix.qtversion }}
+        armfile=${TARGET_CPU:-arm}
+        echo "armfile=${TARGET_CPU:-arm}" | tee -a ${GITHUB_ENV}
+        if [ "$release" = "buster" ]; then
+          repository="http://archive.debian.org/debian-archive/debian"
+        fi
+        legacy=""
+        if [ "$release" = "buster" -o "$release" = "bullseye" ]; then
+          legacy="legacy"
+        fi
+        echo "repository=$repository" | tee -a ${GITHUB_ENV}
+        echo "legacy=$legacy" | tee -a ${GITHUB_ENV}
+        dockerfile=Dockerfile-deconz-dev-qt${qtversion}-${armfile}
+        if [ "x$CPU" = "xno_qemu" ]; then
+          dockerfile=Dockerfile-deconz-dev-qt${qtversion}${legacy}
+        fi
+        echo "dockerfile=$dockerfile" | tee -a ${GITHUB_ENV}
+
+    - name: Show image_name ${{ env.image_name }}
+      run: echo "${{ env.image_name }} "
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push image from ${{ matrix.release }}
+      uses: docker/build-push-action@v7
+      with:
+        file: ${{ env.dockerfile }}
+        push: ${{ github.event.inputs.push_image == 'true' }}
+        platforms: linux/amd64,linux/arm64
+        tags: |
+          ${{ env.image_name }}:latest
+          ${{ env.image_name }}:${{ env.version }}
+        build-args: |
+          RELEASE=${{ env.release }}
+          TARGET_ARCH=${{ env.arch }}
+          TARGET_CPU=${{ env.qemu_cpu }}
+          REPOSITORY=${{ env.repository }}
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@v0.36.0
+      if: ${{ env.legacy == '' && env.cpu == 'arm64v8' }}
+      continue-on-error: true
+      with:
+        image-ref: ${{ env.image_name }}:${{ env.version }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+        ignore-unfixed: true
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v4
+      if: ${{ env.legacy == '' && env.cpu == 'arm64v8' }}
+      continue-on-error: true
+      with:
+        sarif_file: 'trivy-results.sarif'
+
     - name: Show docker image ${{ env.image_name }} cpu uname -m
-      if: ${{ env.update_release == 'true' }}
+      if: ${{ github.event.inputs.push_image == 'true' }}
       run: docker run --rm ${{ env.image_name }} uname -m | xargs -i echo "uname={}" >> ${GITHUB_ENV}
-      
+
     - name: Show uname -m = ${{ env.uname }}
       run: echo "uname -m = ${{ env.uname }}"
-    
-    - name: Show version
-      if: ${{ env.update_release == 'true' }}
-      run: |
-        version=$(docker run --rm ${{ env.image_name }} dpkg -s deconz-dev | sed -n "/^Version: / s/^Version: \([^-]*\).*/\1/p" )
-        echo "version=${version}" | tee -a ${GITHUB_ENV}
-        qtversion=$(docker run --rm ${{ env.image_name }} qmake -v | grep "Qt version" )
-        echo "qtversion=${qtversion}" | tee -a ${GITHUB_ENV}
-    
-    - name: ${{ env.qtversion }}
-      run: echo ${{ env.qtversion }}
-      
-    - name: Using deconz version ${{ env.version }}
-      run: echo ${{ env.version }}
 
-    - name: Run docker push ${{ github.event.inputs.push_image == 'true' }}
-      if: ${{ github.event.inputs.push_image == 'true' }}
-      run: |
-        docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
-        docker tag ${{ env.image_name }} ${{ env.image_name }}:${{ env.version }}
-        docker push ${{ env.image_name }}
-        docker push ${{ env.image_name }}:${{ env.version }}
+  #   - name: Show version
+  #     if: ${{ github.event.inputs.push_image == 'true' }}
+  #     run: |
+  #       version=$(git describe --tags $(git rev-list --tags --max-count=1)) || version=${{ env.version }}
+  #       echo "version=${version}" | tee -a ${GITHUB_ENV}
 
-    - name: Compile using docker image ${{ env.image_name }}
-      continue-on-error: true
-      if: ${{ env.update_release == 'true' }}
-      run: |
-        docker run --rm -v $(pwd):/deconz -w /deconz ${{ env.image_name }} sh -c "cd deconz-rest-plugin && qmake && make -j2"
-        mv libde_rest_plugin.so libde_rest_plugin.so.${{ env.release }}
-        
-    - name: Upload libdeconz_cli_plugin.so.${{ env.release }}
-      continue-on-error: true
-      if: ${{ env.update_release == 'true' }}
-      uses: actions/upload-artifact@v2
-      with:
-        name: libde_rest_plugin.so.${{ env.release }}
-        path: libde_rest_plugin.so.${{ env.release }}
+  #   - name: Using deconz version ${{ env.version }}
+  #     run: echo ${{ env.version }}
 
-  build-release:
-    runs-on: ubuntu-latest
-    needs: build-compile
-    outputs:
-      release: ${{ steps.create.outputs.release }}
-    steps:
-    - uses: actions/checkout@v2
-    
-    - uses: actions/checkout@v2
-      with:
-        repository: dresden-elektronik/deconz-rest-plugin
-        path: deconz-rest-plugin
-        fetch-depth: 0
-    
-    - name: Create release
-      id: create
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        cd deconz-rest-plugin
-        gitcommit=$(git rev-parse --short HEAD)
-        gittag=$(git rev-list --tags --max-count=1)
-        VERSION="$(git describe --tags $(git rev-list --tags --max-count=1) )-${gitcommit}"
-        git log ${gittag}~1..HEAD | tee ../NOTES.txt
-        echo "::set-output name=release::${VERSION}"
-        cd ..
-        gh release view $VERSION || gh release create $VERSION --notes-file NOTES.txt
-        gh release list
-        
-  upload-files:
-    runs-on: ubuntu-latest
-    needs: build-release
-    strategy:
-      matrix:
-        release:
-        - libde_rest_plugin.so.buster-arm32v6
-        - libde_rest_plugin.so.buster-arm32v7
-        - libde_rest_plugin.so.buster-arm64v8
-        - libde_rest_plugin.so.bullseye-arm32v6
-        - libde_rest_plugin.so.bullseye-arm32v7
-        - libde_rest_plugin.so.bullseye-arm64v8
-        # - libde_rest_plugin.so.xenial-x86_64
-        # - libde_rest_plugin.so.bionic-x86_64
-        # - libde_rest_plugin.so.focal-x86_64
-    steps:
-    - uses: actions/checkout@v2
+  #   # - name: Compile using docker image ${{ env.image_name }}
+  #   #   continue-on-error: true
+  #   #   if: ${{ github.event.inputs.push_image == 'true' }}
+  #   #   run: |
+  #   #     QT=${{ matrix.qtversion }}
+  #   #     release=${{ env.release }}
+  #   #     cpu=${{ env.cpu }}
+  #   #     docker run --rm -v $(pwd):/deconz -w /deconz ${{ env.image_name }} \
+  #   #     sh -c "cd deconz-rest-plugin && \
+  #   #     cmake -DCMAKE_INSTALL_PREFIX=/usr -DQT_VERSION_MAJOR=$QT -G Ninja -B build && \
+  #   #     cmake --build build"
+  #   #     mv build/libde_rest_plugin.so libde_rest_plugin.so.qt${QT}-${release}-${cpu}
 
-    - name: Download artifact ${{ matrix.release }}
-      continue-on-error: true
-      uses: actions/download-artifact@v2
-      with:
-        name: ${{ matrix.release }}
-    
-    - name: Upload ${{ matrix.release }} to release ${{ env.gitrelease }}
-      continue-on-error: true
-      run: gh release upload ${{ needs.build-release.outputs.release }} "${{ matrix.release }}" --clobber
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #   # - name: Upload libdeconz_cli_plugin.so.${{ env.release }}
+  #   #   continue-on-error: true
+  #   #   if: ${{ github.event.inputs.push_image == 'true' }}
+  #   #   uses: actions/upload-artifact@v7
+  #   #   with:
+  #   #     name: libde_rest_plugin.so.qt${{ matrix.qtversion }}-${{ env.release }}-${{ env.cpu }}
+  #   #     path: libde_rest_plugin.so.qt${{ matrix.qtversion }}-${{ env.release }}-${{ env.cpu }}
+
+  # build-release:
+  #   runs-on: ubuntu-latest
+  #   needs: build-compile
+  #   outputs:
+  #     release: ${{ steps.create.outputs.release }}
+  #   steps:
+  #   - uses: actions/checkout@v7
+
+  #   - uses: actions/checkout@v7
+  #     with:
+  #       repository: dresden-elektronik/deconz-rest-plugin
+  #       path: deconz-rest-plugin
+  #       fetch-depth: 0
+
+  #   - name: Create release
+  #     id: create
+  #     env:
+  #       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #     run: |
+  #       cd deconz-rest-plugin
+  #       gitcommit=$(git rev-parse --short HEAD)
+  #       gittag=$(git rev-list --tags --max-count=1)
+  #       VERSION="$(git describe --tags $(git rev-list --tags --max-count=1) )-${gitcommit}"
+  #       git log ${gittag}~1..HEAD | tee ../NOTES.txt
+  #       echo "release=${VERSION}" >> $GITHUB_OUTPUT
+  #       cd ..
+  #       gh release view $VERSION || gh release create $VERSION --notes-file NOTES.txt
+  #       gh release list
+
+  # upload-files:
+  #   runs-on: ubuntu-latest
+  #   needs: build-release
+  #   strategy:
+  #     matrix:
+  #       release:
+  #         - bookworm-arm32v6
+  #         - bookworm-arm32v7
+  #         - bookworm-arm64v8
+  #         - trixie-arm32v6
+  #         - trixie-arm32v7
+  #         - trixie-arm64v8
+  #       qt:
+  #         - 5
+  #       include:
+  #         - release: bookworm-arm64v8
+  #           qt: 6
+  #         - release: trixie-arm64v8
+  #           qt: 6
+  #   steps:
+  #   - uses: actions/checkout@v7
+
+  #   - name: Download artifact ${{ matrix.release }}
+  #     continue-on-error: true
+  #     uses: actions/download-artifact@v8
+  #     with:
+  #       name: libde_rest_plugin.so.qt${{ matrix.qt }}-${{ matrix.release }}-${{ env.cpu }}
+
+  #   - name: Upload libde_rest_plugin.so.qt${{ matrix.qt }}-${{ matrix.release }}-${{ env.cpu }}
+  #     continue-on-error: true
+  #     run: gh release upload ${{ needs.build-release.outputs.release }}
+  #          "libde_rest_plugin.so.qt${{ matrix.qt }}-${{ matrix.release }}-${{ env.cpu }}" --clobber
+  #     env:
+  #       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

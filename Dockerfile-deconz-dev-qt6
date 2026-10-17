@@ -1,0 +1,38 @@
+ARG RELEASE=trixie
+
+FROM debian:$RELEASE
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive \
+    apt-get install --no-install-recommends -yqq \
+      lsb-release \
+      ca-certificates \
+      build-essential \
+      cmake \
+      ninja-build \
+      pkg-config \
+      git \
+      sqlite3 \
+      libsqlite3-dev \
+      libgpiod-dev \
+      libssl-dev \
+      qt6-base-dev \
+      qt6-base-dev-tools \
+      qt6-serialport-dev \
+      qt6-websockets-dev \
+      qt6-declarative-dev \
+      qt6-5compat-dev \
+      dpkg-dev \
+      fakeroot \
+      curl \
+      wget gnupg \
+ && wget -qO- https://phoscon.de/apt/deconz.pub.key | \
+    gpg --dearmor -o /etc/apt/trusted.gpg.d/deconz-keyring.gpg \
+ && echo "deb http://phoscon.de/apt/deconz generic main" > /etc/apt/sources.list.d/deconz.list \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive TERM=linux \
+    apt-get install --no-install-recommends -yqq \
+      deconz \
+ && /bin/rm -rf /var/lib/apt/lists/*
+
+CMD ["sh", "-c", "cmake -DCMAKE_INSTALL_PREFIX=/usr -DQT_VERSION_MAJOR=6 -G Ninja -B build && cmake --build build"]
